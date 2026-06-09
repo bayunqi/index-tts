@@ -23,7 +23,7 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument("--verbose", action="store_true", default=False, help="Enable verbose mode")
 parser.add_argument("--port", type=int, default=9003, help="Port to run the web UI on")
-parser.add_argument("--host", type=str, default="::", help="Host to run the web UI on (use :: to bind IPv6)")
+parser.add_argument("--host", type=str, default="[::]", help="Host to run the web UI on (use [::] to bind IPv6)")
 parser.add_argument("--model_dir", type=str, default="./checkpoints", help="Model checkpoints directory")
 parser.add_argument("--fp16", action="store_true", default=False, help="Use FP16 for inference if available")
 parser.add_argument("--deepspeed", action="store_true", default=False, help="Use DeepSpeed to accelerate if available")
@@ -554,12 +554,6 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
 
 if __name__ == "__main__":
     demo.queue(20)
-    if ":" in cmd_args.host:
-        # IPv6: Gradio's built-in launch builds a malformed health-check URL
-        # (e.g. http://:::9003) for IPv6 hosts, so serve via uvicorn directly.
-        import uvicorn
-        from fastapi import FastAPI
-        app = gr.mount_gradio_app(FastAPI(), demo, path="/")
-        uvicorn.run(app, host=cmd_args.host, port=cmd_args.port)
-    else:
-        demo.launch(server_name=cmd_args.host, server_port=cmd_args.port)
+    # For IPv6, pass a bracketed host (e.g. "[::]"); Gradio strips the brackets
+    # when binding and builds a valid health-check URL (http://[::]:port/).
+    demo.launch(server_name=cmd_args.host, server_port=cmd_args.port)
