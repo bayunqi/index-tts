@@ -554,4 +554,12 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
 
 if __name__ == "__main__":
     demo.queue(20)
-    demo.launch(server_name=cmd_args.host, server_port=cmd_args.port)
+    if ":" in cmd_args.host:
+        # IPv6: Gradio's built-in launch builds a malformed health-check URL
+        # (e.g. http://:::9003) for IPv6 hosts, so serve via uvicorn directly.
+        import uvicorn
+        from fastapi import FastAPI
+        app = gr.mount_gradio_app(FastAPI(), demo, path="/")
+        uvicorn.run(app, host=cmd_args.host, port=cmd_args.port)
+    else:
+        demo.launch(server_name=cmd_args.host, server_port=cmd_args.port)
