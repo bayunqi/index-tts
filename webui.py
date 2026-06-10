@@ -16,6 +16,12 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 sys.path.append(os.path.join(current_dir, "indextts"))
 
+# Serve Gradio's temp/cache files from a project-local dir instead of /tmp.
+# Some reverse proxies/WAFs return 403 for file URLs containing "/tmp/"
+# (it looks like a local-file-inclusion attempt), which breaks audio
+# playback/download when the app is accessed through such a proxy.
+os.environ.setdefault("GRADIO_TEMP_DIR", os.path.join(current_dir, "gradio_temp"))
+
 import argparse
 parser = argparse.ArgumentParser(
     description="IndexTTS WebUI",
