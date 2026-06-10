@@ -219,7 +219,17 @@ def create_warning_message(warning_text):
 def create_experimental_warning_message():
     return create_warning_message(i18n('提示：此功能为实验版，结果尚不稳定，我们正在持续优化中。'))
 
-with gr.Blocks(title="IndexTTS Demo") as demo:
+# Hide gr.Audio's built-in player for the reference input: it loads audio via
+# /gradio_api/file=, which the proxy gateway blocks. The upload/microphone
+# controls (SelectSource) are siblings of the player and stay visible; playback
+# is handled by the inline data-URI preview below the component instead.
+_REF_AUDIO_CSS = """
+.ref-audio-noplayer .component-wrapper,
+.ref-audio-noplayer audio { display: none !important; }
+.ref-audio-noplayer .audio-container { height: auto !important; }
+"""
+
+with gr.Blocks(title="IndexTTS Demo", css=_REF_AUDIO_CSS) as demo:
     mutex = threading.Lock()
     gr.HTML('''
     <h2><center>IndexTTS2: A Breakthrough in Emotionally Expressive and Duration-Controlled Auto-Regressive Zero-Shot Text-to-Speech</h2>
@@ -233,6 +243,7 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
             os.makedirs("prompts",exist_ok=True)
             with gr.Column():
                 prompt_audio = gr.Audio(label=i18n("音色参考音频"),key="prompt_audio",
+                                        elem_classes=["ref-audio-noplayer"],
                                         sources=["upload","microphone"],type="filepath")
                 # Inline player so the uploaded/recorded reference can be auditioned
                 # in the browser without a /gradio_api/file= fetch (blocked by the proxy).
