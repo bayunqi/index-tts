@@ -29,4 +29,3 @@ desktop.ini
 /checkpoints/*
 !/checkpoints/*.yaml
 /outputs/
-/gradio_temp/

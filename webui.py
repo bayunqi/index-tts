@@ -16,11 +16,13 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 sys.path.append(os.path.join(current_dir, "indextts"))
 
-# Serve Gradio's temp/cache files from a project-local dir instead of /tmp.
-# Some reverse proxies/WAFs return 403 for file URLs containing "/tmp/"
-# (it looks like a local-file-inclusion attempt), which breaks audio
-# playback/download when the app is accessed through such a proxy.
-os.environ.setdefault("GRADIO_TEMP_DIR", os.path.join(current_dir, "gradio_temp"))
+# Serve .wav as "audio/wav" (Python defaults to "audio/x-wav"). Gradio only
+# serves files inline when the mime type is in its XSS-safe set, which contains
+# "audio/wav" but not "audio/x-wav"; without this, wavs go out as
+# "application/octet-stream", which some gateways/proxies reject (e.g. ROW OG
+# 4018) and which prevents in-browser playback when accessed through a proxy.
+import mimetypes
+mimetypes.add_type("audio/wav", ".wav")
 
 import argparse
 parser = argparse.ArgumentParser(
