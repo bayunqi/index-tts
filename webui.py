@@ -1,3 +1,4 @@
+import base64
 import html
 import json
 import os
@@ -183,7 +184,22 @@ def gen_single(emo_control_method,prompt, text,
                        verbose=cmd_args.verbose,
                        max_text_tokens_per_segment=int(max_text_tokens_per_segment),
                        **kwargs)
-    return gr.update(value=output,visible=True)
+    if not output or not os.path.isfile(output):
+        return gr.update(value="<p style='color:#c00'>生成失败 / Generation failed</p>", visible=True)
+    # Embed the wav as a base64 data URI so it is delivered inside the page
+    # response and never needs a separate /gradio_api/file= request (see the
+    # output_audio component definition for why).
+    with open(output, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    filename = os.path.basename(output)
+    data_uri = f"data:audio/wav;base64,{b64}"
+    player_html = (
+        f'<audio controls style="width:100%" src="{data_uri}"></audio>'
+        f'<div style="margin-top:8px">'
+        f'<a download="{filename}" href="{data_uri}">⬇ {filename}</a>'
+        f'</div>'
+    )
+    return gr.update(value=player_html, visible=True)
 
 def update_prompt_audio():
     update_button = gr.update(interactive=True)
@@ -216,7 +232,13 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
             with gr.Column():
                 input_text_single = gr.TextArea(label=i18n("文本"),key="input_text_single", placeholder=i18n("请输入目标文本"), info=f"{i18n('当前模型版本')}{tts.model_version or '1.0'}")
                 gen_button = gr.Button(i18n("生成语音"), key="gen_button",interactive=True)
-            output_audio = gr.Audio(label=i18n("生成结果"), visible=True,key="output_audio")
+            # Inline the result as a base64 data URI inside an HTML player so the
+            # audio rides in the page response (SSE/JSON) instead of a separate
+            # /gradio_api/file= binary request. Some proxies/gateways (e.g. ROW OG
+            # 4018) reject the binary audio response, which would otherwise break
+            # in-browser playback/download when accessed through the proxy.
+            output_audio = gr.HTML(label=i18n("生成结果"), show_label=True,
+                                   visible=True, key="output_audio")
 
         with gr.Row():
             experimental_checkbox = gr.Checkbox(label=i18n("显示实验功能"), value=False)
