@@ -133,6 +133,27 @@ def format_glossary_markdown():
 
     return "\n".join(lines)
 
+def audio_data_uri(path):
+    """Read an audio file and return it as a base64 `data:` URI."""
+    mime = mimetypes.guess_type(path)[0] or "audio/wav"
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+def inline_audio_html(path, download_name=None):
+    """Build an inline <audio> player (optionally with a download link) that
+    embeds the audio as a base64 data URI, so it is delivered inside the page
+    response instead of a separate /gradio_api/file= request that some proxies
+    /gateways (e.g. ROW OG 4018) reject."""
+    if not path or not os.path.isfile(path):
+        return ""
+    data_uri = audio_data_uri(path)
+    player = f'<audio controls style="width:100%" src="{data_uri}"></audio>'
+    if download_name:
+        player += (f'<div style="margin-top:8px">'
+                   f'<a download="{download_name}" href="{data_uri}">⬇ {download_name}</a></div>')
+    return player
+
 def gen_single(emo_control_method,prompt, text,
                emo_ref_path, emo_weight,
                vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8,
@@ -186,20 +207,7 @@ def gen_single(emo_control_method,prompt, text,
                        **kwargs)
     if not output or not os.path.isfile(output):
         return gr.update(value="<p style='color:#c00'>生成失败 / Generation failed</p>", visible=True)
-    # Embed the wav as a base64 data URI so it is delivered inside the page
-    # response and never needs a separate /gradio_api/file= request (see the
-    # output_audio component definition for why).
-    with open(output, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("ascii")
-    filename = os.path.basename(output)
-    data_uri = f"data:audio/wav;base64,{b64}"
-    player_html = (
-        f'<audio controls style="width:100%" src="{data_uri}"></audio>'
-        f'<div style="margin-top:8px">'
-        f'<a download="{filename}" href="{data_uri}">⬇ {filename}</a>'
-        f'</div>'
-    )
-    return gr.update(value=player_html, visible=True)
+    return gr.update(value=inline_audio_html(output, download_name=os.path.basename(output)), visible=True)
 
 def update_prompt_audio():
     update_button = gr.update(interactive=True)
@@ -223,8 +231,12 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
     with gr.Tab(i18n("音频生成")):
         with gr.Row():
             os.makedirs("prompts",exist_ok=True)
-            prompt_audio = gr.Audio(label=i18n("音色参考音频"),key="prompt_audio",
-                                    sources=["upload","microphone"],type="filepath")
+            with gr.Column():
+                prompt_audio = gr.Audio(label=i18n("音色参考音频"),key="prompt_audio",
+                                        sources=["upload","microphone"],type="filepath")
+                # Inline player so the uploaded/recorded reference can be auditioned
+                # in the browser without a /gradio_api/file= fetch (blocked by the proxy).
+                prompt_audio_preview = gr.HTML(visible=False, key="prompt_audio_preview")
             prompt_list = os.listdir("prompts")
             default = ''
             if prompt_list:
@@ -353,55 +365,18 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                 # typical_sampling, typical_mass,
             ]
 
-        # we must use `gr.Dataset` to support dynamic UI rewrites, since `gr.Examples`
-        # binds tightly to UI and always restores the initial state of all components,
-        # such as the list of available choices in emo_control_method.
-        example_table = gr.Dataset(label="Examples",
-            samples_per_page=20,
-            samples=get_example_cases(include_experimental=False),
-            type="values",
-            # these components are NOT "connected". it just reads the column labels/available
-            # states from them, so we MUST link to the "all options" versions of all components,
-            # such as `emo_control_method_all` (to be able to see EXPERIMENTAL text labels)!
-            components=[prompt_audio,
-                        emo_control_method_all,  # important: support all mode labels!
-                        input_text_single,
-                        emo_upload,
-                        emo_weight,
-                        emo_text,
-                        vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8]
-        )
+    def on_prompt_audio_change(path):
+        # Render an inline player so the uploaded/recorded reference can be
+        # auditioned in the browser without a /gradio_api/file= fetch.
+        if not path or not os.path.isfile(path):
+            return gr.update(value="", visible=False)
+        return gr.update(value=inline_audio_html(path), visible=True)
 
-    def on_example_click(example):
-        print(f"Example clicked: ({len(example)} values) = {example!r}")
-        return (
-            gr.update(value=example[0]),
-            gr.update(value=example[1]),
-            gr.update(value=example[2]),
-            gr.update(value=example[3]),
-            gr.update(value=example[4]),
-            gr.update(value=example[5]),
-            gr.update(value=example[6]),
-            gr.update(value=example[7]),
-            gr.update(value=example[8]),
-            gr.update(value=example[9]),
-            gr.update(value=example[10]),
-            gr.update(value=example[11]),
-            gr.update(value=example[12]),
-            gr.update(value=example[13]),
-        )
-
-    # click() event works on both desktop and mobile UI
-    example_table.click(on_example_click,
-                        inputs=[example_table],
-                        outputs=[prompt_audio,
-                                 emo_control_method,
-                                 input_text_single,
-                                 emo_upload,
-                                 emo_weight,
-                                 emo_text,
-                                 vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8]
-    )
+    prompt_audio.change(on_prompt_audio_change,
+                        inputs=[prompt_audio],
+                        outputs=[prompt_audio_preview])
+    prompt_audio.clear(lambda: gr.update(value="", visible=False),
+                       outputs=[prompt_audio_preview])
 
     def on_input_text_change(text, max_text_tokens_per_segment):
         if text and len(text) > 0:
@@ -510,15 +485,12 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
         # we don't verify that OLD index means the same in NEW list, since we KNOW it does.
         new_index = current_mode_index if current_mode_index < len(new_choices) else 0
 
-        return (
-            gr.update(choices=new_choices, value=new_choices[new_index]),
-            gr.update(samples=get_example_cases(include_experimental=is_experimental)),
-        )
+        return gr.update(choices=new_choices, value=new_choices[new_index])
 
     experimental_checkbox.change(
         on_experimental_change,
         inputs=[experimental_checkbox, emo_control_method],
-        outputs=[emo_control_method, example_table]
+        outputs=[emo_control_method]
     )
 
     def on_glossary_checkbox_change(is_enabled):
