@@ -294,34 +294,40 @@ def gen_batch(batch_folder, batch_zip, batch_clone_mode, text,
     failed = []
     used_output_names = set()
     total = len(ref_entries)
-    for idx, (ref_path, original_name) in enumerate(ref_entries, start=1):
-        output_name = unique_output_name(original_name, used_output_names)
-        output_path = os.path.join(outputs_dir, output_name)
-        try:
-            progress((idx - 1, total), desc=f"{idx}/{total} {os.path.basename(ref_path)}")
-            output = tts.infer(
-                spk_audio_prompt=ref_path,
-                text=text,
-                output_path=output_path,
-                emo_audio_prompt=None,
-                emo_alpha=batch_emo_weight,
-                emo_vector=vec,
-                use_emo_text=False,
-                emo_text=None,
-                use_random=False,
-                verbose=cmd_args.verbose,
-                max_text_tokens_per_segment=int(max_text_tokens_per_segment),
-                **kwargs,
-            )
-            if output and os.path.isfile(output):
-                generated.append(output)
-            else:
-                failed.append(os.path.basename(ref_path))
-        except Exception as e:
-            failed.append(f"{os.path.basename(ref_path)} ({e})")
-            print(f"Batch generation failed for {ref_path}: {e}")
+    old_tts_progress = tts.gr_progress
+    tts.gr_progress = None
+    try:
+        for idx, (ref_path, original_name) in enumerate(ref_entries, start=1):
+            output_name = unique_output_name(original_name, used_output_names)
+            output_path = os.path.join(outputs_dir, output_name)
+            try:
+                progress((idx - 1, total), desc=f"样本 {idx}/{total}: {os.path.basename(ref_path)}")
+                output = tts.infer(
+                    spk_audio_prompt=ref_path,
+                    text=text,
+                    output_path=output_path,
+                    emo_audio_prompt=None,
+                    emo_alpha=batch_emo_weight,
+                    emo_vector=vec,
+                    use_emo_text=False,
+                    emo_text=None,
+                    use_random=False,
+                    verbose=cmd_args.verbose,
+                    max_text_tokens_per_segment=int(max_text_tokens_per_segment),
+                    **kwargs,
+                )
+                if output and os.path.isfile(output):
+                    generated.append(output)
+                else:
+                    failed.append(os.path.basename(ref_path))
+            except Exception as e:
+                failed.append(f"{os.path.basename(ref_path)} ({e})")
+                print(f"Batch generation failed for {ref_path}: {e}")
+            finally:
+                progress((idx, total), desc=f"样本 {idx}/{total}: {os.path.basename(ref_path)}")
+    finally:
+        tts.gr_progress = old_tts_progress
 
-    progress((total, total), desc="Packing results")
     if not generated:
         return gr.update(value="<p style='color:#c00'>批量生成失败，没有可打包的输出。</p>", visible=True)
 
