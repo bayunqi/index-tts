@@ -2,9 +2,11 @@ import base64
 import html
 import json
 import os
+import shutil
 import sys
 import threading
 import time
+import zipfile
 
 import warnings
 
@@ -153,6 +155,182 @@ def inline_audio_html(path, download_name=None):
         player += (f'<div style="margin-top:8px">'
                    f'<a download="{download_name}" href="{data_uri}">⬇ {download_name}</a></div>')
     return player
+
+def file_data_uri(path, mime):
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+def inline_download_html(path, download_name, label=None, mime="application/zip"):
+    if not path or not os.path.isfile(path):
+        return ""
+    data_uri = file_data_uri(path, mime)
+    link_text = html.escape(label or download_name)
+    return (f'<a download="{html.escape(download_name)}" href="{data_uri}" '
+            f'style="display:inline-block;margin-top:8px">{link_text}</a>')
+
+def unique_output_name(name, used_names, suffix="_output"):
+    stem, _ = os.path.splitext(os.path.basename(name))
+    candidate = f"{stem}{suffix}.wav"
+    index = 2
+    while candidate in used_names:
+        candidate = f"{stem}{suffix}_{index}.wav"
+        index += 1
+    used_names.add(candidate)
+    return candidate
+
+def extract_wavs_from_zip(zip_path, extract_dir):
+    wav_entries = []
+    used_names = set()
+    with zipfile.ZipFile(zip_path) as zf:
+        for member in zf.infolist():
+            if member.is_dir():
+                continue
+            base = os.path.basename(member.filename)
+            if not base or base.startswith(".") or not base.lower().endswith(".wav"):
+                continue
+            ref_name = unique_output_name(base, used_names, suffix="")
+            ref_path = os.path.join(extract_dir, ref_name)
+            with zf.open(member) as src, open(ref_path, "wb") as dst:
+                dst.write(src.read())
+            wav_entries.append((ref_path, base))
+    return wav_entries
+
+def normalize_uploaded_paths(paths):
+    if not paths:
+        return []
+    if isinstance(paths, (str, os.PathLike)):
+        return [str(paths)]
+    normalized = []
+    for item in paths:
+        if isinstance(item, (str, os.PathLike)):
+            normalized.append(str(item))
+        elif isinstance(item, dict) and item.get("path"):
+            normalized.append(item["path"])
+    return normalized
+
+def collect_wavs_from_uploads(paths, refs_dir):
+    wav_entries = []
+    used_names = set()
+    for path in normalize_uploaded_paths(paths):
+        if not path or not os.path.isfile(path) or not path.lower().endswith(".wav"):
+            continue
+        base = os.path.basename(path)
+        ref_name = unique_output_name(base, used_names, suffix="")
+        ref_path = os.path.join(refs_dir, ref_name)
+        shutil.copyfile(path, ref_path)
+        wav_entries.append((ref_path, base))
+    return wav_entries
+
+def batch_mode_to_index(batch_clone_mode):
+    if isinstance(batch_clone_mode, int):
+        return batch_clone_mode
+    if hasattr(batch_clone_mode, "value"):
+        return batch_clone_mode.value
+    if batch_clone_mode == i18n("使用情感向量控制"):
+        return 1
+    return 0
+
+def gen_batch(batch_folder, batch_zip, batch_clone_mode, text,
+              batch_emo_weight,
+              batch_vec1, batch_vec2, batch_vec3, batch_vec4,
+              batch_vec5, batch_vec6, batch_vec7, batch_vec8,
+              max_text_tokens_per_segment=120,
+              *args, progress=gr.Progress()):
+    if not batch_folder and not batch_zip:
+        return gr.update(value="<p style='color:#c00'>请先上传包含 wav 的文件夹或 zip 包。</p>", visible=True)
+    if not text or not text.strip():
+        return gr.update(value="<p style='color:#c00'>请输入目标文本。</p>", visible=True)
+    if batch_zip and not zipfile.is_zipfile(batch_zip):
+        return gr.update(value="<p style='color:#c00'>批量 zip 输入需要是有效 zip 包。</p>", visible=True)
+
+    task_name = f"batch_{int(time.time())}"
+    task_dir = os.path.join("outputs", "tasks", task_name)
+    refs_dir = os.path.join(task_dir, "refs")
+    outputs_dir = os.path.join(task_dir, "outputs")
+    os.makedirs(refs_dir, exist_ok=True)
+    os.makedirs(outputs_dir, exist_ok=True)
+
+    ref_entries = collect_wavs_from_uploads(batch_folder, refs_dir)
+    if not ref_entries and batch_zip:
+        ref_entries = extract_wavs_from_zip(batch_zip, refs_dir)
+    if not ref_entries:
+        return gr.update(value="<p style='color:#c00'>没有找到 wav 文件。</p>", visible=True)
+
+    do_sample, top_p, top_k, temperature, \
+        length_penalty, num_beams, repetition_penalty, max_mel_tokens = args
+    kwargs = {
+        "do_sample": bool(do_sample),
+        "top_p": float(top_p),
+        "top_k": int(top_k) if int(top_k) > 0 else None,
+        "temperature": float(temperature),
+        "length_penalty": float(length_penalty),
+        "num_beams": num_beams,
+        "repetition_penalty": float(repetition_penalty),
+        "max_mel_tokens": int(max_mel_tokens),
+    }
+
+    batch_clone_mode = batch_mode_to_index(batch_clone_mode)
+    use_vectors = batch_clone_mode == 1
+    vec = None
+    if use_vectors:
+        vec = [batch_vec1, batch_vec2, batch_vec3, batch_vec4,
+               batch_vec5, batch_vec6, batch_vec7, batch_vec8]
+        vec = tts.normalize_emo_vec(vec, apply_bias=True)
+
+    generated = []
+    failed = []
+    used_output_names = set()
+    total = len(ref_entries)
+    for idx, (ref_path, original_name) in enumerate(ref_entries, start=1):
+        output_name = unique_output_name(original_name, used_output_names)
+        output_path = os.path.join(outputs_dir, output_name)
+        try:
+            progress((idx - 1, total), desc=f"{idx}/{total} {os.path.basename(ref_path)}")
+            output = tts.infer(
+                spk_audio_prompt=ref_path,
+                text=text,
+                output_path=output_path,
+                emo_audio_prompt=None,
+                emo_alpha=batch_emo_weight,
+                emo_vector=vec,
+                use_emo_text=False,
+                emo_text=None,
+                use_random=False,
+                verbose=cmd_args.verbose,
+                max_text_tokens_per_segment=int(max_text_tokens_per_segment),
+                **kwargs,
+            )
+            if output and os.path.isfile(output):
+                generated.append(output)
+            else:
+                failed.append(os.path.basename(ref_path))
+        except Exception as e:
+            failed.append(f"{os.path.basename(ref_path)} ({e})")
+            print(f"Batch generation failed for {ref_path}: {e}")
+
+    progress((total, total), desc="Packing results")
+    if not generated:
+        return gr.update(value="<p style='color:#c00'>批量生成失败，没有可打包的输出。</p>", visible=True)
+
+    zip_output_path = os.path.join(task_dir, f"{task_name}_outputs.zip")
+    with zipfile.ZipFile(zip_output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in generated:
+            zf.write(path, arcname=os.path.basename(path))
+
+    summary = [
+        f"<p>批量生成完成：成功 {len(generated)} / {total}</p>",
+        inline_download_html(
+            zip_output_path,
+            os.path.basename(zip_output_path),
+            label=f"⬇ 下载结果 zip ({os.path.basename(zip_output_path)})",
+        ),
+    ]
+    if failed:
+        failed_items = "".join(f"<li>{html.escape(item)}</li>" for item in failed)
+        summary.append(f"<details style='margin-top:8px'><summary>失败 {len(failed)} 个</summary><ul>{failed_items}</ul></details>")
+    summary.append(f"<p style='font-size:12px;color:#666'>服务器路径：{html.escape(os.path.abspath(outputs_dir))}</p>")
+    return gr.update(value="\n".join(summary), visible=True)
 
 def gen_single(emo_control_method,prompt, text,
                emo_ref_path, emo_weight,
@@ -376,6 +554,49 @@ with gr.Blocks(title="IndexTTS Demo", css=_REF_AUDIO_CSS) as demo:
                 # typical_sampling, typical_mass,
             ]
 
+        with gr.Accordion(i18n("批量生成"), open=False):
+            with gr.Row():
+                with gr.Column():
+                    batch_folder = gr.File(
+                        label=i18n("批量参考音频文件夹（包含 wav 文件）"),
+                        file_count="directory",
+                        file_types=[".wav"],
+                        type="filepath",
+                    )
+                    batch_zip = gr.File(
+                        label=i18n("批量参考音频 zip（文件夹上传不可用时使用）"),
+                        file_count="single",
+                        file_types=[".zip"],
+                        type="filepath",
+                    )
+                with gr.Column():
+                    batch_clone_mode = gr.Radio(
+                        choices=[
+                            i18n("与音色参考音频相同"),
+                            i18n("使用情感向量控制"),
+                        ],
+                        type="index",
+                        value=i18n("与音色参考音频相同"),
+                        label=i18n("批量 Clone 模式"),
+                    )
+                    batch_gen_button = gr.Button(i18n("批量生成"), interactive=True)
+            with gr.Group(visible=False) as batch_emotion_vector_group:
+                with gr.Row():
+                    batch_emo_weight = gr.Slider(label=i18n("情感权重"), minimum=0.0, maximum=1.0, value=0.65, step=0.01)
+                with gr.Row():
+                    with gr.Column():
+                        batch_vec1 = gr.Slider(label=i18n("喜"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
+                        batch_vec2 = gr.Slider(label=i18n("怒"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
+                        batch_vec3 = gr.Slider(label=i18n("哀"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
+                        batch_vec4 = gr.Slider(label=i18n("惧"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
+                    with gr.Column():
+                        batch_vec5 = gr.Slider(label=i18n("厌恶"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
+                        batch_vec6 = gr.Slider(label=i18n("低落"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
+                        batch_vec7 = gr.Slider(label=i18n("惊喜"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
+                        batch_vec8 = gr.Slider(label=i18n("平静"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
+            batch_output = gr.HTML(label=i18n("批量结果"), show_label=True,
+                                   visible=True, key="batch_output")
+
     def on_prompt_audio_change(path):
         # Render an inline player so the uploaded/recorded reference can be
         # auditioned in the browser without a /gradio_api/file= fetch.
@@ -388,6 +609,15 @@ with gr.Blocks(title="IndexTTS Demo", css=_REF_AUDIO_CSS) as demo:
                         outputs=[prompt_audio_preview])
     prompt_audio.clear(lambda: gr.update(value="", visible=False),
                        outputs=[prompt_audio_preview])
+
+    def on_batch_clone_mode_change(batch_clone_mode):
+        return gr.update(visible=batch_mode_to_index(batch_clone_mode) == 1)
+
+    batch_clone_mode.change(
+        on_batch_clone_mode_change,
+        inputs=[batch_clone_mode],
+        outputs=[batch_emotion_vector_group],
+    )
 
     def on_input_text_change(text, max_text_tokens_per_segment):
         if text and len(text) > 0:
@@ -562,6 +792,19 @@ with gr.Blocks(title="IndexTTS Demo", css=_REF_AUDIO_CSS) as demo:
                              *advanced_params,
                      ],
                      outputs=[output_audio])
+
+    batch_gen_button.click(
+        gen_batch,
+        inputs=[
+            batch_folder, batch_zip, batch_clone_mode, input_text_single,
+            batch_emo_weight,
+            batch_vec1, batch_vec2, batch_vec3, batch_vec4,
+            batch_vec5, batch_vec6, batch_vec7, batch_vec8,
+            max_text_tokens_per_segment,
+            *advanced_params,
+        ],
+        outputs=[batch_output],
+    )
 
 
 
