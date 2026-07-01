@@ -80,6 +80,7 @@ EMO_CHOICES_ALL = [i18n("与音色参考音频相同"),
                 i18n("使用情感向量控制"),
                 i18n("使用情感描述文本控制")]
 EMO_CHOICES_OFFICIAL = EMO_CHOICES_ALL[:-1]  # skip experimental features
+BATCH_REFERENCE_EXTENSIONS = (".wav", ".mp3")
 
 os.makedirs("outputs/tasks",exist_ok=True)
 os.makedirs("prompts",exist_ok=True)
@@ -179,7 +180,18 @@ def unique_output_name(name, used_names, suffix="_output"):
     used_names.add(candidate)
     return candidate
 
-def extract_wavs_from_zip(zip_path, extract_dir):
+def unique_reference_name(name, used_names):
+    base = os.path.basename(name)
+    stem, ext = os.path.splitext(base)
+    candidate = f"{stem}{ext.lower()}"
+    index = 2
+    while candidate in used_names:
+        candidate = f"{stem}_{index}{ext.lower()}"
+        index += 1
+    used_names.add(candidate)
+    return candidate
+
+def extract_reference_audios_from_zip(zip_path, extract_dir):
     wav_entries = []
     used_names = set()
     with zipfile.ZipFile(zip_path) as zf:
@@ -187,9 +199,9 @@ def extract_wavs_from_zip(zip_path, extract_dir):
             if member.is_dir():
                 continue
             base = os.path.basename(member.filename)
-            if not base or base.startswith(".") or not base.lower().endswith(".wav"):
+            if not base or base.startswith(".") or not base.lower().endswith(BATCH_REFERENCE_EXTENSIONS):
                 continue
-            ref_name = unique_output_name(base, used_names, suffix="")
+            ref_name = unique_reference_name(base, used_names)
             ref_path = os.path.join(extract_dir, ref_name)
             with zf.open(member) as src, open(ref_path, "wb") as dst:
                 dst.write(src.read())
@@ -213,10 +225,10 @@ def collect_wavs_from_uploads(paths, refs_dir):
     wav_entries = []
     used_names = set()
     for path in normalize_uploaded_paths(paths):
-        if not path or not os.path.isfile(path) or not path.lower().endswith(".wav"):
+        if not path or not os.path.isfile(path) or not path.lower().endswith(BATCH_REFERENCE_EXTENSIONS):
             continue
         base = os.path.basename(path)
-        ref_name = unique_output_name(base, used_names, suffix="")
+        ref_name = unique_reference_name(base, used_names)
         ref_path = os.path.join(refs_dir, ref_name)
         shutil.copyfile(path, ref_path)
         wav_entries.append((ref_path, base))
@@ -238,7 +250,7 @@ def gen_batch(batch_folder, batch_zip, batch_clone_mode, text,
               max_text_tokens_per_segment=120,
               *args, progress=gr.Progress()):
     if not batch_folder and not batch_zip:
-        return gr.update(value="<p style='color:#c00'>请先上传包含 wav 的文件夹或 zip 包。</p>", visible=True)
+        return gr.update(value="<p style='color:#c00'>请先上传包含 wav/mp3 的文件夹或 zip 包。</p>", visible=True)
     if not text or not text.strip():
         return gr.update(value="<p style='color:#c00'>请输入目标文本。</p>", visible=True)
     if batch_zip and not zipfile.is_zipfile(batch_zip):
@@ -253,9 +265,9 @@ def gen_batch(batch_folder, batch_zip, batch_clone_mode, text,
 
     ref_entries = collect_wavs_from_uploads(batch_folder, refs_dir)
     if not ref_entries and batch_zip:
-        ref_entries = extract_wavs_from_zip(batch_zip, refs_dir)
+        ref_entries = extract_reference_audios_from_zip(batch_zip, refs_dir)
     if not ref_entries:
-        return gr.update(value="<p style='color:#c00'>没有找到 wav 文件。</p>", visible=True)
+        return gr.update(value="<p style='color:#c00'>没有找到 wav/mp3 文件。</p>", visible=True)
 
     do_sample, top_p, top_k, temperature, \
         length_penalty, num_beams, repetition_penalty, max_mel_tokens = args
@@ -558,9 +570,9 @@ with gr.Blocks(title="IndexTTS Demo", css=_REF_AUDIO_CSS) as demo:
             with gr.Row():
                 with gr.Column():
                     batch_folder = gr.File(
-                        label=i18n("批量参考音频文件夹（包含 wav 文件）"),
+                        label=i18n("批量参考音频文件夹（包含 wav/mp3 文件）"),
                         file_count="directory",
-                        file_types=[".wav"],
+                        file_types=[".wav", ".mp3"],
                         type="filepath",
                     )
                     batch_zip = gr.File(
