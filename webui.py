@@ -80,6 +80,9 @@ EMO_CHOICES_ALL = [i18n("与音色参考音频相同"),
                 i18n("使用情感向量控制"),
                 i18n("使用情感描述文本控制")]
 EMO_CHOICES_OFFICIAL = EMO_CHOICES_ALL[:-1]  # skip experimental features
+BATCH_CLONE_MODE_SAME = i18n("与音色参考音频相同")
+BATCH_CLONE_MODE_VECTOR = i18n("使用情感向量控制")
+BATCH_CLONE_MODE_CHOICES = [BATCH_CLONE_MODE_SAME, BATCH_CLONE_MODE_VECTOR]
 BATCH_REFERENCE_EXTENSIONS = (".wav", ".mp3")
 
 os.makedirs("outputs/tasks",exist_ok=True)
@@ -238,8 +241,8 @@ def batch_mode_to_index(batch_clone_mode):
     if isinstance(batch_clone_mode, int):
         return batch_clone_mode
     if hasattr(batch_clone_mode, "value"):
-        return batch_clone_mode.value
-    if batch_clone_mode == i18n("使用情感向量控制"):
+        return batch_mode_to_index(batch_clone_mode.value)
+    if batch_clone_mode == BATCH_CLONE_MODE_VECTOR:
         return 1
     return 0
 
@@ -589,18 +592,12 @@ with gr.Blocks(title="IndexTTS Demo", css=_REF_AUDIO_CSS) as demo:
                     )
                 with gr.Column():
                     batch_clone_mode = gr.Radio(
-                        choices=[
-                            i18n("与音色参考音频相同"),
-                            i18n("使用情感向量控制"),
-                        ],
-                        type="index",
-                        value=i18n("与音色参考音频相同"),
+                        choices=BATCH_CLONE_MODE_CHOICES,
+                        value=BATCH_CLONE_MODE_SAME,
                         label=i18n("批量 Clone 模式"),
                     )
                     batch_gen_button = gr.Button(i18n("批量生成"), interactive=True)
             with gr.Group(visible=False) as batch_emotion_vector_group:
-                with gr.Row():
-                    batch_emo_weight = gr.Slider(label=i18n("情感权重"), minimum=0.0, maximum=1.0, value=0.65, step=0.01)
                 with gr.Row():
                     with gr.Column():
                         batch_vec1 = gr.Slider(label=i18n("喜"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
@@ -612,6 +609,8 @@ with gr.Blocks(title="IndexTTS Demo", css=_REF_AUDIO_CSS) as demo:
                         batch_vec6 = gr.Slider(label=i18n("低落"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
                         batch_vec7 = gr.Slider(label=i18n("惊喜"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
                         batch_vec8 = gr.Slider(label=i18n("平静"), minimum=0.0, maximum=1.0, value=0.0, step=0.05)
+                with gr.Row():
+                    batch_emo_weight = gr.Slider(label=i18n("情感权重"), minimum=0.0, maximum=1.0, value=0.65, step=0.01)
             batch_output = gr.HTML(label=i18n("批量结果"), show_label=True,
                                    visible=True, key="batch_output")
 
